@@ -1,0 +1,9 @@
+student_id,event_id,attended,participated,submitted
+S001,E001,1,1,1
+S002,E001,1,0,1
+S003,E001,0,0,0
+S004,E001,1,1,0
+S001,E002,1,1,0
+S002,E002,1,1,1
+S003,E002,0,0,0
+S004,E002,1,0,1
