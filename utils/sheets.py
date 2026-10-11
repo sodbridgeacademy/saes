@@ -2,20 +2,6 @@ import gspread
 from google.oauth2.service_account import Credentials
 import streamlit as st
 
-# @st.cache_resource
-# def get_client():
-#     scope = [
-#         "https://www.googleapis.com/auth/spreadsheets",
-#         "https://www.googleapis.com/auth/drive"
-#     ]
-
-#     creds = Credentials.from_service_account_file(
-#         "service_account.json",
-#         scopes=scope
-#     )
-
-#     return gspread.authorize(creds)
-
 
 @st.cache_resource
 def get_client():
@@ -24,9 +10,14 @@ def get_client():
         "https://www.googleapis.com/auth/drive"
     ]
 
-    if "gcp_service_account" in st.secrets:
+    try:
+        gcp_service_account = st.secrets.get("gcp_service_account")
+    except (FileNotFoundError, KeyError):
+        gcp_service_account = None
+
+    if gcp_service_account:
         creds = Credentials.from_service_account_info(
-            dict(st.secrets["gcp_service_account"]),
+            dict(gcp_service_account),
             scopes=scope
         )
     else:
@@ -39,6 +30,7 @@ def get_client():
 
 
 
+
 @st.cache_resource
 def get_sheets():
     client = get_client()
@@ -47,7 +39,8 @@ def get_sheets():
     return {
         "students": sheet.worksheet("students"),
         "events": sheet.worksheet("events"),
-        "logs": sheet.worksheet("engagement_logs")
+        "logs": sheet.worksheet("engagement_logs"),
+        "student_accounts": sheet.worksheet("student_accounts"),
     }
 
 

@@ -1,69 +1,350 @@
+
+import re
 import streamlit as st
 import pandas as pd
-import uuid
 
 from utils.sheets import get_sheets
-from utils.data import load_students, load_events, load_logs
-
-sheets = get_sheets()
-
-students_sheet = sheets["students"]
-# students = pd.DataFrame(students_sheet.get_all_records())
+from utils.data import load_students
+from utils.auth import hash_password
 
 
-students = load_students()
-events = load_events()
-logs = load_logs()
+st.set_page_config(
+    page_title="SAES Student Registration",
+    page_icon="🧾",
+    layout="centered",
+)
+
+
+# --------------------------------------------------
+# CONFIGURATION
+# --------------------------------------------------
+
+SCHOOLS = ["DAT", "DEV", "DSN", "CYB"]
+
+COHORT_OPTIONS = {
+    "November 2026": "NOV26",
+    "December 2026": "DEC26",
+    "January 2027": "JAN27",
+}
+
+STUDENT_SOURCES = {
+    "Direct applicant": "Direct",
+    "GOY": "GOY",
+    "THCHF": "THCHF",
+}
+
+STUDENT_HEADERS = [
+    "student_id",
+    "name",
+    "email_address",
+    "school",
+    "cohort",
+    "created_at",
+    "student_source",
+]
+
+ACCOUNT_HEADERS = [
+    "email_address",
+    "student_id",
+    "password_hash",
+    "created_at",
+    "account_status",
+]
+
+
+# --------------------------------------------------
+# HELPERS
+# --------------------------------------------------
+
+def normalize_email(email):
+    return str(email).strip().casefold()
+
+
+def is_valid_email(email):
+    return bool(
+        re.fullmatch(
+            r"[^@\s]+@[^@\s]+\.[^@\s]+",
+            email,
+        )
+    )
 
 
 def generate_student_id(df, prefix):
+    """Generate the next sequential ID for a school."""
 
-    if df.empty:
+    if df.empty or "student_id" not in df.columns:
         return f"{prefix}-001"
 
-    existing = df[df["student_id"].str.startswith(prefix)]
-
-    if existing.empty:
-        return f"{prefix}-001"
-
-    last_num = (
-        existing["student_id"]
-        .str.split("-")
-        .str[-1]
-        .astype(int)
-        .max()
+    ids = (
+        df["student_id"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
     )
 
-    return f"{prefix}-{str(last_num + 1).zfill(3)}"
+    pattern = rf"^{re.escape(prefix)}-(\d+)$"
 
+    numbers = ids.str.extract(
+        pattern,
+        expand=False,
+    ).dropna()
+
+    if numbers.empty:
+        return f"{prefix}-001"
+
+    next_number = numbers.astype(int).max() + 1
+
+    return f"{prefix}-{next_number:03d}"
+
+
+def get_missing_headers(actual_headers, required_headers):
+    return [
+        header
+        for header in required_headers
+        if header not in actual_headers
+    ]
+
+
+# --------------------------------------------------
+# LOAD DATA
+# --------------------------------------------------
 
 st.title("🧾 Student Registration")
 
+try:
+    sheets = get_sheets()
+
+    students_sheet = sheets["students"]
+    accounts_sheet = sheets["student_accounts"]
+
+    students = load_students()
+
+    student_sheet_headers = students_sheet.row_values(1)
+    account_sheet_headers = accounts_sheet.row_values(1)
+
+except Exception as exc:
+    st.error(
+        "Registration is temporarily unavailable. "
+        "Please try again later or contact the "
+        "Academy administrator."
+    )
+    print(f"SAES registration setup error: {exc}")
+    st.stop()
+
+
+missing_student_headers = get_missing_headers(
+    student_sheet_headers,
+    STUDENT_HEADERS,
+)
+
+missing_account_headers = get_missing_headers(
+    account_sheet_headers,
+    ACCOUNT_HEADERS,
+)
+
+if missing_student_headers or missing_account_headers:
+    st.error(
+        "The registration worksheets are missing required "
+        "columns. Please contact the Academy administrator."
+    )
+
+    if missing_student_headers:
+        st.write(
+            "Missing student columns:",
+            ", ".join(missing_student_headers),
+        )
+
+    if missing_account_headers:
+        st.write(
+            "Missing account columns:",
+            ", ".join(missing_account_headers),
+        )
+
+    st.stop()
+
+
+# --------------------------------------------------
+# REGISTRATION FORM
+# --------------------------------------------------
+
 with st.form("register"):
-
     name = st.text_input("Full Name")
-    email = st.text_input("Email")
 
-    school = st.selectbox("School", ["DAT", "DEV", "DSN", "CYB"])
+    email = st.text_input("Email Address")
 
-    submit = st.form_submit_button("Register")
+    school = st.selectbox(
+        "School",
+        options=SCHOOLS,
+    )
 
+    cohort_label = st.selectbox(
+        "Joining Cohort",
+        options=list(COHORT_OPTIONS.keys()),
+    )
+
+    source_label = st.selectbox(
+        "Registration Source",
+        options=list(STUDENT_SOURCES.keys()),
+    )
+
+    password = st.text_input(
+        "Create Password",
+        type="password",
+        help="Use at least 8 characters.",
+    )
+
+    confirm_password = st.text_input(
+        "Confirm Password",
+        type="password",
+    )
+
+    submit = st.form_submit_button(
+        "Register",
+        use_container_width=True,
+    )
+
+
+# --------------------------------------------------
+# PROCESS REGISTRATION
+# --------------------------------------------------
 
 if submit:
+    name = name.strip()
+    email = normalize_email(email)
 
-    if email in students["email_address"].values:
-        st.error("Already registered")
-        st.stop()
+    cohort = COHORT_OPTIONS[cohort_label]
+    student_source = STUDENT_SOURCES[source_label]
 
-    student_id = generate_student_id(students, school)
+    if not name:
+        st.error("Please enter your full name.")
 
-    students_sheet.append_row([
-        student_id,
-        name,
-        email,
-        school,
-        4,
-        str(pd.Timestamp.now())
-    ])
+    elif not is_valid_email(email):
+        st.error("Please enter a valid email address.")
 
-    st.success(f"Registered! Your ID: {student_id}")
+    elif len(password) < 8:
+        st.error(
+            "Your password must contain at least 8 characters."
+        )
+
+    elif password != confirm_password:
+        st.error("The passwords do not match.")
+
+    elif "email_address" not in students.columns:
+        st.error(
+            "The student sheet is missing the email_address "
+            "column. Contact the Academy administrator."
+        )
+
+    else:
+        try:
+            # Check existing student profiles.
+            existing_student_emails = (
+                students["email_address"]
+                .fillna("")
+                .astype(str)
+                .map(normalize_email)
+            )
+
+            if existing_student_emails.eq(email).any():
+                st.error(
+                    "This email is already registered. "
+                    "Please use your existing SAES account "
+                    "or contact the Academy Manager."
+                )
+
+            else:
+                # Check existing login accounts as well.
+                accounts = accounts_sheet.get_all_records()
+
+                existing_account_emails = [
+                    normalize_email(
+                        account.get("email_address", "")
+                    )
+                    for account in accounts
+                ]
+
+                if email in existing_account_emails:
+                    st.error(
+                        "An account already exists for this email. "
+                        "Please contact the Academy Manager."
+                    )
+
+                else:
+                    student_id = generate_student_id(
+                        students,
+                        school,
+                    )
+
+                    created_at = pd.Timestamp.now().isoformat()
+
+                    # Prepare the student profile row by header.
+                    student_data = {
+                        "student_id": student_id,
+                        "name": name,
+                        "email_address": email,
+                        "school": school,
+                        "cohort": cohort,
+                        "created_at": created_at,
+                        "student_source": student_source,
+                    }
+
+                    student_row = [
+                        student_data[header]
+                        for header in student_sheet_headers
+                    ]
+
+                    # Prepare the account row by header.
+                    account_data = {
+                        "email_address": email,
+                        "student_id": student_id,
+                        "password_hash": hash_password(password),
+                        "created_at": created_at,
+                        "account_status": "active",
+                    }
+
+                    account_row = [
+                        account_data[header]
+                        for header in account_sheet_headers
+                    ]
+
+                    # Write profile first, then login account.
+                    students_sheet.append_row(
+                        student_row,
+                        value_input_option="USER_ENTERED",
+                    )
+
+                    # Refresh the profile cache after writing.
+                    load_students.clear()
+
+                    accounts_sheet.append_row(
+                        account_row,
+                        value_input_option="USER_ENTERED",
+                    )
+
+                    st.success(
+                        "Registration successful!"
+                    )
+
+                    st.write(f"**Student ID:** {student_id}")
+                    st.write(f"**School:** {school}")
+                    st.write(f"**Cohort:** {cohort}")
+                    st.write(
+                        f"**Email:** {email}"
+                    )
+
+                    st.info(
+                        "Your account has been created. "
+                        "Go to the SAES Login page to sign in "
+                        "with your email address and password."
+                    )
+
+        except Exception as exc:
+            # Avoid displaying technical details to applicants.
+            st.error(
+                "Registration could not be fully completed. "
+                "Please do not submit repeatedly. Contact "
+                "the Academy administrator to verify your "
+                "registration before trying again."
+            )
+
+            print(f"SAES registration error: {exc}")
