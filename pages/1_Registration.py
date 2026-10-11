@@ -22,6 +22,7 @@ st.set_page_config(
 SCHOOLS = ["DAT", "DEV", "DSN", "CYB"]
 
 COHORT_OPTIONS = {
+    "Cohort 4 (September 2026)": "SEP26",
     "November 2026": "NOV26",
     "December 2026": "DEC26",
     "January 2027": "JAN27",
