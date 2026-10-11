@@ -1,6 +1,8 @@
 
 import streamlit as st
 import pandas as pd
+import uuid
+import re
 
 from datetime import timedelta
 from utils.data import load_students, load_events
@@ -64,8 +66,12 @@ st.caption(
 events = load_events().copy()
 students = load_students().copy()
 
+
+
 sheets = get_sheets()
+
 events_sheet = sheets["events"]
+cohorts_sheet = sheets["cohorts"]
 
 # --------------------------------------------------
 # HELPERS
@@ -191,6 +197,70 @@ def update_event_fields(event_id, updates):
 
 
 # --------------------------------------------------
+# COHORT MANAGEMENT HELPERS
+# --------------------------------------------------
+
+COHORT_HEADERS = [
+    "cohort_id",
+    "cohort_name",
+    "cohort_code",
+    "start_date",
+    "end_date",
+    "registration_status",
+    "created_at",
+]
+
+
+def load_cohort_records():
+    """Load cohorts and validate the worksheet structure."""
+    headers = cohorts_sheet.row_values(1)
+
+    missing = [
+        header for header in COHORT_HEADERS
+        if header not in headers
+    ]
+
+    if missing:
+        raise ValueError(
+            "The cohorts worksheet is missing columns: "
+            + ", ".join(missing)
+        )
+
+    records = cohorts_sheet.get_all_records()
+
+    return pd.DataFrame(records), headers
+
+
+def update_cohort_status(cohort_id, new_status):
+    """Change a cohort's registration status by its ID."""
+    headers = {
+        str(value).strip(): index + 1
+        for index, value in enumerate(
+            cohorts_sheet.row_values(1)
+        )
+        if str(value).strip()
+    }
+
+    values = cohorts_sheet.get_all_values()
+    id_column = headers["cohort_id"]
+
+    for row_number, row in enumerate(values[1:], start=2):
+        if (
+            len(row) >= id_column
+            and str(row[id_column - 1]).strip()
+            == str(cohort_id).strip()
+        ):
+            cohorts_sheet.update_cell(
+                row_number,
+                headers["registration_status"],
+                new_status,
+            )
+            return
+
+    raise ValueError("The selected cohort could not be found.")
+
+
+# --------------------------------------------------
 # DASHBOARD SUMMARY
 # --------------------------------------------------
 
@@ -227,6 +297,244 @@ m3.metric("Open Check-ins", open_count)
 m4.metric("Scheduled Events", scheduled_count)
 
 st.divider()
+
+
+# --------------------------------------------------
+# COHORT MANAGEMENT
+# --------------------------------------------------
+
+st.header("🎓 Cohort Management")
+
+try:
+    cohorts, cohort_sheet_headers = load_cohort_records()
+
+    if cohorts.empty:
+        st.info("No cohorts have been created yet.")
+
+    with st.expander("➕ Create a New Cohort", expanded=cohorts.empty):
+        with st.form("create_cohort_form"):
+            cohort_name = st.text_input(
+                "Cohort Name",
+                placeholder="Cohort 5 (November 2026)",
+            )
+
+            cohort_code = st.text_input(
+                "Unique Cohort Code",
+                placeholder="NOV26",
+                help="Use a short code such as NOV26 or COH5.",
+            )
+
+            start_date = st.date_input("Start Date")
+
+            has_end_date = st.checkbox(
+                "Specify an end date",
+                value=False,
+            )
+
+            # end_date = (
+            #     st.date_input("End Date")
+            #     if has_end_date
+            #     else None
+            # )
+
+            end_date = None
+
+            if has_end_date:
+                suggested_end_date = (
+                    pd.Timestamp(start_date)
+                    + pd.DateOffset(weeks=6)
+                ).date()
+
+                end_date = st.date_input(
+                    "End Date",
+                    value=suggested_end_date,
+                    key=f"cohort_end_date_{start_date.isoformat()}",
+                )
+
+            initial_status = st.selectbox(
+                "Registration Status",
+                ["Open", "Closed"],
+            )
+
+            create_cohort = st.form_submit_button(
+                "Create Cohort",
+                use_container_width=True,
+            )
+
+        if create_cohort:
+            clean_name = cohort_name.strip()
+            clean_code = cohort_code.strip().upper()
+
+            if not clean_name:
+                st.error("Enter a cohort name.")
+
+            elif not re.fullmatch(
+                r"[A-Z0-9_-]{2,20}",
+                clean_code,
+            ):
+                st.error(
+                    "Use 2–20 letters, numbers, hyphens "
+                    "or underscores for the cohort code."
+                )
+
+            elif end_date and end_date < start_date:
+                st.error(
+                    "The end date cannot be earlier than "
+                    "the start date."
+                )
+
+            else:
+                existing_codes = (
+                    cohorts["cohort_code"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                    .str.upper()
+                    .tolist()
+                    if "cohort_code" in cohorts.columns
+                    else []
+                )
+
+                if clean_code in existing_codes:
+                    st.error(
+                        "That cohort code already exists. "
+                        "Choose a different code."
+                    )
+
+                else:
+                    cohort_data = {
+                        "cohort_id": (
+                            "COH-" + uuid.uuid4().hex[:12].upper()
+                        ),
+                        "cohort_name": clean_name,
+                        "cohort_code": clean_code,
+                        "start_date": start_date.isoformat(),
+                        "end_date": (
+                            end_date.isoformat()
+                            if end_date
+                            else ""
+                        ),
+                        "registration_status": initial_status,
+                        "created_at": now_lagos().isoformat(),
+                    }
+
+                    new_row = [
+                        cohort_data.get(header, "")
+                        for header in cohort_sheet_headers
+                    ]
+
+                    cohorts_sheet.append_row(
+                        new_row,
+                        value_input_option="USER_ENTERED",
+                    )
+
+                    st.success(
+                        f"{clean_name} has been created."
+                    )
+                    st.rerun()
+
+    st.subheader("Existing Cohorts")
+
+    if cohorts.empty:
+        st.caption("Your cohorts will appear here after creation.")
+
+    else:
+        st.dataframe(
+            cohorts[
+                [
+                    column for column in [
+                        "cohort_name",
+                        "cohort_code",
+                        "start_date",
+                        "end_date",
+                        "registration_status",
+                    ]
+                    if column in cohorts.columns
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if (
+            "cohort_id" in cohorts.columns
+            and "cohort_name" in cohorts.columns
+            and "cohort_code" in cohorts.columns
+            and "registration_status" in cohorts.columns
+        ):
+            st.subheader("Change Registration Status")
+
+            cohort_options = {
+                (
+                    f"{row['cohort_name']} "
+                    f"({row['cohort_code']})"
+                ): str(row["cohort_id"])
+                for _, row in cohorts.iterrows()
+            }
+
+            selected_cohort_label = st.selectbox(
+                "Select a cohort",
+                list(cohort_options.keys()),
+                key="admin_cohort_selection",
+            )
+
+            selected_cohort_id = cohort_options[
+                selected_cohort_label
+            ]
+
+            selected_cohort = cohorts[
+                cohorts["cohort_id"].astype(str)
+                == selected_cohort_id
+            ].iloc[0]
+
+            current_registration_status = str(
+                selected_cohort["registration_status"]
+            ).strip().title()
+
+            st.write(
+                "Current registration status: "
+                f"**{current_registration_status}**"
+            )
+
+            if current_registration_status == "Open":
+                if st.button(
+                    "Close Registration for This Cohort",
+                    key="close_cohort_registration",
+                ):
+                    update_cohort_status(
+                        selected_cohort_id,
+                        "Closed",
+                    )
+                    st.success("Cohort registration closed.")
+                    st.rerun()
+
+            elif current_registration_status == "Closed":
+                if st.button(
+                    "Reopen Registration for This Cohort",
+                    key="reopen_cohort_registration",
+                ):
+                    update_cohort_status(
+                        selected_cohort_id,
+                        "Open",
+                    )
+                    st.success("Cohort registration reopened.")
+                    st.rerun()
+
+            else:
+                st.warning(
+                    "This cohort has an unrecognised registration "
+                    "status. Update it to Open or Closed."
+                )
+
+except Exception as exc:
+    st.error(
+        "Cohort management is temporarily unavailable. "
+        "Check the cohorts worksheet headers and try again."
+    )
+    print(f"SAES cohort management error: {exc}")
+
+st.divider()
+
 
 # --------------------------------------------------
 # TABLE 1: EVENT MANAGEMENT
@@ -414,6 +722,16 @@ elif "student_id" not in students.columns:
 
 else:
     student_view = students.copy()
+
+    # Ensure cohort values are consistently treated as text.
+    # This prevents PyArrow from interpreting cohort codes
+    # such as "Nov26" as numeric values.
+    if "cohort" in student_view.columns:
+        student_view["cohort"] = (
+            student_view["cohort"]
+            .fillna("")
+            .astype(str)
+        )
 
     search = st.text_input(
         "Search students",

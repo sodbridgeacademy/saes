@@ -21,12 +21,15 @@ st.set_page_config(
 
 SCHOOLS = ["DAT", "DEV", "DSN", "CYB"]
 
-COHORT_OPTIONS = {
-    "Cohort 4 (September 2026)": "SEP26",
-    "November 2026": "NOV26",
-    "December 2026": "DEC26",
-    "January 2027": "JAN27",
-}
+COHORT_HEADERS = [
+    "cohort_id",
+    "cohort_name",
+    "cohort_code",
+    "start_date",
+    "end_date",
+    "registration_status",
+    "created_at",
+]
 
 STUDENT_SOURCES = {
     "Direct applicant": "Direct",
@@ -117,11 +120,15 @@ try:
 
     students_sheet = sheets["students"]
     accounts_sheet = sheets["student_accounts"]
+    cohorts_sheet = sheets["cohorts"]
 
     students = load_students()
 
     student_sheet_headers = students_sheet.row_values(1)
     account_sheet_headers = accounts_sheet.row_values(1)
+    cohort_sheet_headers = cohorts_sheet.row_values(1)
+
+    cohort_records = cohorts_sheet.get_all_records()
 
 except Exception as exc:
     st.error(
@@ -142,6 +149,20 @@ missing_account_headers = get_missing_headers(
     account_sheet_headers,
     ACCOUNT_HEADERS,
 )
+
+missing_cohort_headers = get_missing_headers(
+    cohort_sheet_headers,
+    COHORT_HEADERS,
+)
+
+if missing_cohort_headers:
+    st.error(
+        "The cohorts worksheet is missing required columns: "
+        + ", ".join(missing_cohort_headers)
+    )
+    st.stop()
+
+
 
 if missing_student_headers or missing_account_headers:
     st.error(
@@ -165,6 +186,35 @@ if missing_student_headers or missing_account_headers:
 
 
 # --------------------------------------------------
+# AVAILABLE COHORTS
+# --------------------------------------------------
+
+open_cohorts = [
+    cohort
+    for cohort in cohort_records
+    if str(
+        cohort.get("registration_status", "")
+    ).strip().casefold() == "open"
+    and str(cohort.get("cohort_name", "")).strip()
+    and str(cohort.get("cohort_code", "")).strip()
+]
+
+cohort_options = {
+    (
+        f"{str(cohort['cohort_name']).strip()} "
+        f"({str(cohort['cohort_code']).strip().upper()})"
+    ): str(cohort["cohort_code"]).strip().upper()
+    for cohort in open_cohorts
+}
+
+if not cohort_options:
+    st.info(
+        "Registration is currently closed for all cohorts. "
+        "Please check back later."
+    )
+    st.stop()
+
+# --------------------------------------------------
 # REGISTRATION FORM
 # --------------------------------------------------
 
@@ -178,9 +228,10 @@ with st.form("register"):
         options=SCHOOLS,
     )
 
+  
     cohort_label = st.selectbox(
         "Joining Cohort",
-        options=list(COHORT_OPTIONS.keys()),
+        options=list(cohort_options.keys()),
     )
 
     source_label = st.selectbox(
@@ -213,10 +264,31 @@ if submit:
     name = name.strip()
     email = normalize_email(email)
 
-    cohort = COHORT_OPTIONS[cohort_label]
+    cohort = cohort_options[cohort_label]
     student_source = STUDENT_SOURCES[source_label]
 
-    if not name:
+    # Recheck registration status at submission time.
+    try:
+        latest_cohort_records = cohorts_sheet.get_all_records()
+
+        cohort_is_open = any(
+            str(item.get("cohort_code", "")).strip().upper()
+            == cohort
+            and str(
+                item.get("registration_status", "")
+            ).strip().casefold() == "open"
+            for item in latest_cohort_records
+        )
+    except Exception:
+        cohort_is_open = False
+
+
+    if not cohort_is_open:
+        st.error(
+            "This cohort is no longer accepting registrations. "
+            "Please refresh the page and select an available cohort."
+        )
+    elif not name:
         st.error("Please enter your full name.")
 
     elif not is_valid_email(email):

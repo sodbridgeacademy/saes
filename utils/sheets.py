@@ -41,6 +41,7 @@ def get_sheets():
         "events": sheet.worksheet("events"),
         "logs": sheet.worksheet("engagement_logs"),
         "student_accounts": sheet.worksheet("student_accounts"),
+        "cohorts": sheet.worksheet("cohorts"),
     }
 
 
