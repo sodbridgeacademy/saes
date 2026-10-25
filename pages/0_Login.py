@@ -275,6 +275,7 @@ mode = st.radio(
 )
 
 
+
 # ==================================================
 # LOGIN
 # ==================================================
@@ -292,87 +293,88 @@ if mode == "Log In":
         submit = st.form_submit_button("Log In")
 
     if submit:
-    email = normalize_email(email)
+        email = normalize_email(email)
 
-    if not email or not password:
-        st.error("Enter your email address and password.")
+        if not email or not password:
+            st.error("Enter your email address and password.")
 
-    else:
-        try:
-            # 1. Try the new shared account system.
-            shared_account = authenticate_user(email, password)
+        else:
+            try:
+                # 1. Try the new shared account system.
+                shared_account = authenticate_user(email, password)
 
-            if shared_account:
-                set_user_session(shared_account)
-                st.rerun()
-
-            else:
-                # 2. Fall back to the existing student system.
-                (
-                    worksheet,
-                    headers,
-                    accounts,
-                    header_positions,
-                ) = get_account_context()
-
-                matching_accounts = [
-                    (index, account)
-                    for index, account in enumerate(
-                        accounts,
-                        start=2,
-                    )
-                    if normalize_email(
-                        account.get("email_address", "")
-                    ) == email
-                ]
-
-                if len(matching_accounts) != 1:
-                    st.error(
-                        "Unable to log in with those details. "
-                        "Check your credentials or contact "
-                        "the Academy Manager."
-                    )
+                if shared_account:
+                    set_user_session(shared_account)
+                    st.rerun()
 
                 else:
-                    row_number, account = matching_accounts[0]
+                    # 2. Fall back to the existing student system.
+                    (
+                        worksheet,
+                        headers,
+                        accounts,
+                        header_positions,
+                    ) = get_account_context()
 
-                    status = str(
-                        account.get("account_status", "")
-                    ).strip().casefold()
-
-                    stored_hash = str(
-                        account.get("password_hash", "")
-                    )
-
-                    if status != "active":
-                        st.error(
-                            "This account is not active. "
-                            "Please contact the Academy Manager."
+                    matching_accounts = [
+                        (index, account)
+                        for index, account in enumerate(
+                            accounts,
+                            start=2,
                         )
+                        if normalize_email(
+                            account.get("email_address", "")
+                        ) == email
+                    ]
 
-                    elif verify_password(password, stored_hash):
-                        st.session_state["student_id"] = str(
-                            account.get("student_id", "")
-                        ).strip()
-
-                        st.session_state["student_email"] = email
-                        st.session_state["student_authenticated"] = True
-
-                        st.rerun()
-
-                    else:
+                    if len(matching_accounts) != 1:
                         st.error(
                             "Unable to log in with those details. "
                             "Check your credentials or contact "
                             "the Academy Manager."
                         )
 
-        except Exception as exc:
-            print(f"SAES login error: {exc}")
-            st.error(
-                "Login is temporarily unavailable. "
-                "Please try again later."
-            )
+                    else:
+                        row_number, account = matching_accounts[0]
+
+                        status = str(
+                            account.get("account_status", "")
+                        ).strip().casefold()
+
+                        stored_hash = str(
+                            account.get("password_hash", "")
+                        )
+
+                        if status != "active":
+                            st.error(
+                                "This account is not active. "
+                                "Please contact the Academy Manager."
+                            )
+
+                        elif verify_password(password, stored_hash):
+                            st.session_state["student_id"] = str(
+                                account.get("student_id", "")
+                            ).strip()
+
+                            st.session_state["student_email"] = email
+                            st.session_state["student_authenticated"] = True
+
+                            st.rerun()
+
+                        else:
+                            st.error(
+                                "Unable to log in with those details. "
+                                "Check your credentials or contact "
+                                "the Academy Manager."
+                            )
+
+            except Exception as exc:
+                print(f"SAES login error: {exc}")
+                st.error(
+                    "Login is temporarily unavailable. "
+                    "Please try again later."
+                )
+
 
 
 # ==================================================
