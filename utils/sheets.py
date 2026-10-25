@@ -30,7 +30,6 @@ def get_client():
 
 
 
-
 @st.cache_resource
 def get_sheets():
     client = get_client()
@@ -38,11 +37,25 @@ def get_sheets():
 
     return {
         "students": sheet.worksheet("students"),
+        "user_accounts": sheet.worksheet("user_accounts"),
+        "enrollments": sheet.worksheet("enrollments"),
+        "professional_applications": sheet.worksheet(
+            "professional_applications"
+        ),
+        "staff": sheet.worksheet("staff"),
         "events": sheet.worksheet("events"),
         "logs": sheet.worksheet("engagement_logs"),
-        "student_accounts": sheet.worksheet("student_accounts"),
+        "assignments": sheet.worksheet("assignments"),
+        "assignment_submissions": sheet.worksheet(
+            "assignment_submissions"
+        ),
         "cohorts": sheet.worksheet("cohorts"),
+        "staff_invitations": sheet.worksheet("staff_invitations"),
+
     }
+
+
+
 
 
 

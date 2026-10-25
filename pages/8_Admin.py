@@ -72,6 +72,7 @@ sheets = get_sheets()
 
 events_sheet = sheets["events"]
 cohorts_sheet = sheets["cohorts"]
+invitation_sheet = sheets["staff_invitations"]
 
 # --------------------------------------------------
 # HELPERS
