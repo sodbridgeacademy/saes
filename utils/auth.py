@@ -2,11 +2,15 @@
 import os
 import hashlib
 import hmac
+
 import streamlit as st
 
 from utils.sheets import get_sheets
 
 
+# --------------------------------------------------
+# PASSWORD SECURITY
+# --------------------------------------------------
 
 def hash_password(password):
     """Create a salted scrypt hash for password storage."""
@@ -64,6 +68,10 @@ def verify_password(password, stored_hash):
         return False
 
 
+# --------------------------------------------------
+# NORMALISATION
+# --------------------------------------------------
+
 def normalize_email(email):
     """Normalize an email address for matching."""
 
@@ -76,8 +84,54 @@ def normalize_student_id(student_id):
     return str(student_id or "").strip().casefold()
 
 
+def normalize_user_id(user_id):
+    """Normalize a shared user ID for matching."""
+
+    return str(user_id or "").strip()
+
+
+def normalize_role(role):
+    """Normalize an account role."""
+
+    return str(role or "").strip().casefold()
+
+
+# --------------------------------------------------
+# SESSION MANAGEMENT
+# --------------------------------------------------
+
+def clear_user_session():
+    """Clear shared authentication and profile session data."""
+
+    keys = (
+        "user_authenticated",
+        "user_id",
+        "user_email",
+        "user_role",
+        "staff_id",
+        "staff_name",
+        "staff_username",
+        "student_authenticated",
+        "student_id",
+        "student_email",
+        "admin_authenticated",
+    )
+
+    for key in keys:
+        st.session_state.pop(key, None)
+
+
 def clear_student_session():
-    """Clear the student's authentication session."""
+    """
+    Clear student authentication state.
+
+    Also clears shared authentication when the active account
+    is a student.
+    """
+
+    current_role = normalize_role(
+        st.session_state.get("user_role", "")
+    )
 
     for key in (
         "student_authenticated",
@@ -86,13 +140,267 @@ def clear_student_session():
     ):
         st.session_state.pop(key, None)
 
+    if current_role == "student":
+        clear_user_session()
+
+
+def set_user_session(account):
+    """
+    Establish a shared authenticated session from a user_accounts
+    record. Call only after successfully verifying the password.
+    """
+
+    user_id = normalize_user_id(account.get("user_id", ""))
+    email = normalize_email(account.get("email_address", ""))
+    role = normalize_role(account.get("role", ""))
+
+    if not user_id or not email or not role:
+        raise ValueError(
+            "The account is missing its user ID, email or role."
+        )
+
+    clear_user_session()
+
+    st.session_state["user_authenticated"] = True
+    st.session_state["user_id"] = user_id
+    st.session_state["user_email"] = email
+    st.session_state["user_role"] = role
+
+    # Temporary compatibility for existing student pages.
+    if role == "student":
+        st.session_state["student_authenticated"] = True
+        st.session_state["student_email"] = email
+
+    # The old admin dashboard uses a shared admin password.
+    # Do not enable this flag merely because a shared account
+    # has role="admin". The admin dashboard must be migrated
+    # to role-aware authentication first.
+
+
+def logout_user():
+    """Log out the current user."""
+
+    clear_user_session()
+
+
+# --------------------------------------------------
+# SHARED ACCOUNT LOOKUP
+# --------------------------------------------------
+
+def get_active_user_by_email(email):
+    """
+    Return one active user_accounts record for the email.
+
+    Returns None if no active, uniquely identifiable account
+    exists. Fails closed on duplicate matching records.
+    """
+
+    normalized_email = normalize_email(email)
+
+    if not normalized_email:
+        return None
+
+    sheets = get_sheets()
+    accounts_sheet = sheets["user_accounts"]
+
+    headers = accounts_sheet.row_values(1)
+
+    required_headers = {
+        "user_id",
+        "email_address",
+        "password_hash",
+        "account_status",
+        "role",
+    }
+
+    if not required_headers.issubset(set(headers)):
+        raise ValueError(
+            "The user_accounts worksheet is missing required columns."
+        )
+
+    accounts = accounts_sheet.get_all_records(
+        default_blank="",
+    )
+
+    matches = [
+        account
+        for account in accounts
+        if normalize_email(
+            account.get("email_address", "")
+        ) == normalized_email
+    ]
+
+    if len(matches) != 1:
+        return None
+
+    account = matches[0]
+
+    if str(
+        account.get("account_status", "")
+    ).strip().casefold() != "active":
+        return None
+
+    if not normalize_user_id(account.get("user_id", "")):
+        return None
+
+    if not normalize_role(account.get("role", "")):
+        return None
+
+    return account
+
+
+def authenticate_user(email, password):
+    """
+    Authenticate an account against user_accounts.
+
+    Returns the account record on success, otherwise None.
+    Raises worksheet/configuration errors to the caller.
+    """
+
+    account = get_active_user_by_email(email)
+
+    if account is None:
+        return None
+
+    stored_hash = str(
+        account.get("password_hash", "")
+    ).strip()
+
+    if not stored_hash:
+        return None
+
+    if not verify_password(password, stored_hash):
+        return None
+
+    return account
+
+
+# --------------------------------------------------
+# SHARED SESSION VERIFICATION
+# --------------------------------------------------
+
+def require_user_login(allowed_roles=None):
+    """
+    Require an authenticated, active shared user account.
+
+    Optionally restrict access to a list or set of roles.
+    Returns the verified account record.
+    """
+
+    if not st.session_state.get("user_authenticated"):
+        st.warning("Please log in to access this page.")
+        st.stop()
+
+    user_id = normalize_user_id(
+        st.session_state.get("user_id", "")
+    )
+    email = normalize_email(
+        st.session_state.get("user_email", "")
+    )
+    role = normalize_role(
+        st.session_state.get("user_role", "")
+    )
+
+    if not user_id or not email or not role:
+        clear_user_session()
+        st.error(
+            "Your session is invalid. Please log in again."
+        )
+        st.stop()
+
+    try:
+        sheets = get_sheets()
+        accounts_sheet = sheets["user_accounts"]
+
+        headers = accounts_sheet.row_values(1)
+
+        required_headers = {
+            "user_id",
+            "email_address",
+            "account_status",
+            "role",
+        }
+
+        if not required_headers.issubset(set(headers)):
+            raise ValueError(
+                "The user_accounts worksheet is missing required columns."
+            )
+
+        accounts = accounts_sheet.get_all_records(
+            default_blank="",
+        )
+
+        matches = [
+            account
+            for account in accounts
+            if normalize_user_id(
+                account.get("user_id", "")
+            ) == user_id
+        ]
+
+        if len(matches) != 1:
+            clear_user_session()
+            st.error(
+                "Your account could not be verified. Please log in again."
+            )
+            st.stop()
+
+        account = matches[0]
+
+        account_email = normalize_email(
+            account.get("email_address", "")
+        )
+        account_role = normalize_role(
+            account.get("role", "")
+        )
+        account_status = str(
+            account.get("account_status", "")
+        ).strip().casefold()
+
+        if (
+            account_email != email
+            or account_role != role
+            or account_status != "active"
+        ):
+            clear_user_session()
+            st.error(
+                "Your account is no longer authorised. "
+                "Please log in again or contact the administrator."
+            )
+            st.stop()
+
+        if allowed_roles is not None:
+            permitted_roles = {
+                normalize_role(item)
+                for item in allowed_roles
+            }
+
+            if account_role not in permitted_roles:
+                st.error(
+                    "You do not have permission to access this page."
+                )
+                st.stop()
+
+        return account
+
+    except Exception as exc:
+        clear_user_session()
+        print(f"SAES shared session verification error: {exc}")
+        st.error(
+            "Your account could not be verified right now. "
+            "Please try again later."
+        )
+        st.stop()
+
+
+# --------------------------------------------------
+# LEGACY STUDENT SESSION VERIFICATION
+# --------------------------------------------------
 
 def require_student_login():
     """
-    Require an authenticated student with a currently active,
-    uniquely identifiable account in the student_accounts sheet.
-
-    Fails closed if account verification cannot be completed.
+    Preserve the existing student_accounts verification while
+    legacy student pages are migrated to shared authentication.
     """
 
     if not st.session_state.get("student_authenticated"):
@@ -134,12 +442,12 @@ def require_student_login():
             )
             st.stop()
 
-        accounts = accounts_sheet.get_all_records()
+        accounts = accounts_sheet.get_all_records(
+            default_blank="",
+        )
 
         normalized_id = normalize_student_id(student_id)
 
-        # Match either identifier so duplicate or conflicting
-        # account records cannot be silently ignored.
         related_accounts = [
             account
             for account in accounts
@@ -153,8 +461,6 @@ def require_student_login():
             )
         ]
 
-        # Exactly one account must be associated with these
-        # identifiers, and both identifiers must agree.
         if len(related_accounts) != 1:
             clear_student_session()
             st.error(
@@ -188,7 +494,6 @@ def require_student_login():
             )
             st.stop()
 
-        # Return the canonical ID stored in the account sheet.
         return str(account["student_id"]).strip()
 
     except Exception as exc:

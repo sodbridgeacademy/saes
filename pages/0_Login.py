@@ -14,8 +14,10 @@ from utils.auth import (
     verify_password,
     hash_password,
     clear_student_session,
+    clear_user_session,
+    authenticate_user,
+    set_user_session,
 )
-
 
 # --------------------------------------------------
 # Configuration
@@ -219,12 +221,30 @@ if "login_mode" not in st.session_state:
 if st.session_state.pop("return_to_login", False):
     st.session_state["login_mode"] = "Log In"
 
+
 # --------------------------------------------------
 # Already authenticated
 # --------------------------------------------------
 
-if st.session_state.get("student_authenticated"):
+if st.session_state.get("user_authenticated"):
+    st.success(
+        "Logged in as "
+        + str(st.session_state.get("user_email", ""))
+    )
 
+    st.caption(
+        "Role: "
+        + str(st.session_state.get("user_role", "")).title()
+    )
+
+    if st.button("Log Out"):
+        clear_user_session()
+        st.session_state.pop("login_mode", None)
+        st.rerun()
+
+    st.stop()
+
+elif st.session_state.get("student_authenticated"):
     st.success(
         "Logged in as "
         + str(st.session_state.get("student_email", ""))
@@ -272,15 +292,22 @@ if mode == "Log In":
         submit = st.form_submit_button("Log In")
 
     if submit:
-        email = normalize_email(email)
+    email = normalize_email(email)
 
-        if not email or not password:
-            st.error(
-                "Enter your email address and password."
-            )
+    if not email or not password:
+        st.error("Enter your email address and password.")
 
-        else:
-            try:
+    else:
+        try:
+            # 1. Try the new shared account system.
+            shared_account = authenticate_user(email, password)
+
+            if shared_account:
+                set_user_session(shared_account)
+                st.rerun()
+
+            else:
+                # 2. Fall back to the existing student system.
                 (
                     worksheet,
                     headers,
@@ -299,7 +326,6 @@ if mode == "Log In":
                     ) == email
                 ]
 
-                # Fail closed if duplicate account records exist.
                 if len(matching_accounts) != 1:
                     st.error(
                         "Unable to log in with those details. "
@@ -324,17 +350,15 @@ if mode == "Log In":
                             "Please contact the Academy Manager."
                         )
 
-                    
                     elif verify_password(password, stored_hash):
                         st.session_state["student_id"] = str(
-                            account["student_id"]
+                            account.get("student_id", "")
                         ).strip()
 
                         st.session_state["student_email"] = email
                         st.session_state["student_authenticated"] = True
 
                         st.rerun()
-
 
                     else:
                         st.error(
@@ -343,13 +367,12 @@ if mode == "Log In":
                             "the Academy Manager."
                         )
 
-            except Exception as exc:
-                print(f"SAES login error: {exc}")
-
-                st.error(
-                    "Login is temporarily unavailable. "
-                    "Please try again later."
-                )
+        except Exception as exc:
+            print(f"SAES login error: {exc}")
+            st.error(
+                "Login is temporarily unavailable. "
+                "Please try again later."
+            )
 
 
 # ==================================================

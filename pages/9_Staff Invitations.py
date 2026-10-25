@@ -314,7 +314,7 @@ Sodbridge Academy Administration
 
         <p>
             If you have any questions, please contact the
-            Sodbridge Academy administration.
+            Sodbridge Academy Manager.
         </p>
 
         <p>
