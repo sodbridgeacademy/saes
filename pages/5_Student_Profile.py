@@ -143,7 +143,7 @@ if st.button(
     key="student_logout",
     use_container_width=True,
 ):
-    clear_user_session()
+    logout_user()
     st.switch_page("pages/0_Login.py")
 
 

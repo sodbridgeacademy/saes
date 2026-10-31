@@ -19,6 +19,7 @@ from utils.auth import (
     authenticate_user,
     set_user_session,
     create_persistent_session,
+    logout_user,
 )
 
 logger = logging.getLogger(__name__)
