@@ -38,6 +38,13 @@ INVITATION_HEADERS = [
     "created_by",
     "used_at",
     "used_by",
+    "school_id",
+]
+
+SCHOOL_HEADERS = [
+    "school_id",
+    "school_name",
+    "status",
 ]
 
 # Only roles explicitly approved by the application.
@@ -214,7 +221,63 @@ def effective_status(row):
 
 
 
-def send_invitation_email(email, role, registration_url):
+def load_active_schools(schools_sheet):
+    """Return active schools keyed by their stable school IDs."""
+    headers = [
+        str(header).strip()
+        for header in schools_sheet.row_values(1)
+    ]
+
+    missing = [
+        header
+        for header in SCHOOL_HEADERS
+        if header not in headers
+    ]
+
+    if missing:
+        raise ValueError(
+            "The schools worksheet is missing these headers: "
+            + ", ".join(missing)
+        )
+
+    records = schools_sheet.get_all_records(
+        default_blank="",
+    )
+
+    active_schools = {}
+
+    for record in records:
+        school_id = str(
+            record.get("school_id", "")
+        ).strip()
+
+        school_name = str(
+            record.get("school_name", "")
+        ).strip()
+
+        status = str(
+            record.get("status", "")
+        ).strip().lower()
+
+        if (
+            school_id
+            and school_name
+            and status == "active"
+        ):
+            # If IDs are duplicated, fail rather than silently
+            # assigning an ambiguous school.
+            if school_id in active_schools:
+                raise ValueError(
+                    f"Duplicate school ID found: {school_id}"
+                )
+
+            active_schools[school_id] = school_name
+
+    return active_schools
+
+
+
+def send_invitation_email(email, role, registration_url, school_name="",):
     """Send a staff invitation using the configured SMTP server."""
 
     required_secrets = [
@@ -241,6 +304,10 @@ def send_invitation_email(email, role, registration_url):
 
     safe_role = html.escape(role.title(), quote=True)
     safe_url = html.escape(registration_url, quote=True)
+    safe_school = html.escape(
+        school_name or "Not assigned",
+        quote=True,
+    )
 
     if not host or not username or not password:
         raise RuntimeError(
@@ -258,7 +325,8 @@ def send_invitation_email(email, role, registration_url):
 
 You have been invited to join Sodbridge Academy's staff platform.
 
-Your assigned role: {role.title()}
+Assigned role: {role.title()}
+Assigned school: {school_name or "Not assigned"}
 
 To complete your registration, please open the secure invitation link below:
 
@@ -287,6 +355,11 @@ Sodbridge Academy Administration
         <p>
             <strong>Your assigned role:</strong>
             {safe_role}
+        </p>
+
+        <p>
+            <strong>Your assigned school:</strong>
+            {safe_school}
         </p>
 
         <p>
@@ -370,11 +443,15 @@ st.caption(
     "for Sodbridge Academy staff."
 )
 
+
 try:
     sheets = get_sheets()
+
     invitation_sheet = sheets["staff_invitations"]
+    schools_sheet = sheets["schools"]
 
     invitations = load_invitations(invitation_sheet)
+    active_schools = load_active_schools(schools_sheet)
 
 except Exception as exc:
     st.error(
@@ -397,6 +474,7 @@ st.info(
     "and can be used only once."
 )
 
+
 with st.form("create_staff_invitation"):
     invited_email_input = st.text_input(
         "Staff member's email address",
@@ -411,6 +489,28 @@ with st.form("create_staff_invitation"):
             "during registration."
         ),
     )
+
+    school_options = [""] + list(active_schools.keys())
+
+    invited_school_id = st.selectbox(
+        "Assigned school",
+        options=school_options,
+        format_func=lambda school_id: (
+            "Select a school"
+            if not school_id
+            else active_schools[school_id]
+        ),
+        help=(
+            "A school is required for instructors. "
+            "For an admin invitation, school assignment is optional."
+        ),
+    )
+
+    submitted = st.form_submit_button(
+        "Generate and Email Invitation",
+        use_container_width=True,
+    )
+
 
     submitted = st.form_submit_button(
         "Generate and Email Invitation",
@@ -430,6 +530,21 @@ if submitted:
 
     elif invited_role not in APPROVED_ROLES:
         st.error("The selected staff role is not permitted.")
+
+    elif (
+        invited_role == "instructor"
+        and not invited_school_id
+    ):
+        st.error("Select a school for the instructor.")
+
+    elif (
+        invited_school_id
+        and invited_school_id not in active_schools
+    ):
+        st.error(
+            "The selected school is unavailable. "
+            "Refresh the page and try again."
+        )
 
     else:
         # Check configuration before saving an invitation.
@@ -513,6 +628,7 @@ if submitted:
                         "created_by": "shared_admin",
                         "used_at": "",
                         "used_by": "",
+                        "school_id": invited_school_id,
                     }
 
                     # Validate the worksheet schema.
@@ -564,6 +680,11 @@ if submitted:
                         "invitation_id": invitation_id,
                         "email": email,
                         "role": invited_role,
+                        "school_id": invited_school_id,
+                        "school_name": active_schools.get(
+                            invited_school_id,
+                            "",
+                        ),
                         "url": registration_url,
                         "expires_at": expires_at.isoformat(),
                         "email_sent": False,
@@ -574,6 +695,10 @@ if submitted:
                             email=email,
                             role=invited_role,
                             registration_url=registration_url,
+                            school_name=active_schools.get(
+                                invited_school_id,
+                                "",
+                            ),
                         )
 
                         st.session_state[
@@ -622,6 +747,11 @@ if new_invitation:
 
     st.write(f"**Email:** {new_invitation['email']}")
     st.write(f"**Assigned role:** {new_invitation['role']}")
+        if new_invitation.get("school_name"):
+        st.write(
+            f"**Assigned school:** "
+            f"{new_invitation['school_name']}"
+        )
     st.write(f"**Invitation ID:** {new_invitation['invitation_id']}")
     st.write(f"**Expires:** {new_invitation['expires_at']}")
 
@@ -675,6 +805,10 @@ if new_invitation:
                             email=new_invitation["email"],
                             role=new_invitation["role"],
                             registration_url=new_invitation["url"],
+                            school_name=new_invitation.get(
+                                "school_name",
+                                "",
+                            ),
                         )
 
                         st.session_state[

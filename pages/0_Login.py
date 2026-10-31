@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 
 import streamlit as st
+import logging
 
 from utils.sheets import get_sheets
 from utils.auth import (
@@ -19,6 +20,18 @@ from utils.auth import (
     set_user_session,
 )
 
+logger = logging.getLogger(__name__)
+
+# --------------------------------------------------
+# Role-based page destinations
+# --------------------------------------------------
+
+ROLE_DESTINATIONS = {
+    "student": "pages/5_Student_Profile.py",
+    "instructor": "pages/Staff_Profile.py",
+    "admin": "pages/8_Admin.py",
+}
+
 # --------------------------------------------------
 # Configuration
 # --------------------------------------------------
@@ -29,7 +42,8 @@ RESEND_COOLDOWN_SECONDS = 60
 
 REQUIRED_HEADERS = [
     "email_address",
-    "student_id",
+    "user_id",
+    "role",
     "password_hash",
     "account_status",
     "reset_code_hash",
@@ -37,6 +51,24 @@ REQUIRED_HEADERS = [
     "reset_attempts",
     "reset_last_sent_at",
 ]
+
+
+def redirect_authenticated_user():
+    """Route an authenticated user according to their role."""
+
+    if st.session_state.get("student_authenticated"):
+        role = "student"
+    elif st.session_state.get("user_authenticated"):
+        role = str(
+            st.session_state.get("user_role", "")
+        ).strip().casefold()
+    else:
+        return
+
+    destination = ROLE_DESTINATIONS.get(role)
+
+    if destination and "REPLACE_WITH_" not in destination:
+        st.switch_page(destination)
 
 
 # --------------------------------------------------
@@ -69,6 +101,7 @@ def parse_timestamp(value):
         return None
 
 
+
 def get_account_context():
     """
     Return the account worksheet, headers, and records.
@@ -76,7 +109,7 @@ def get_account_context():
     """
 
     sheets = get_sheets()
-    worksheet = sheets["student_accounts"]
+    worksheet = sheets["user_accounts"]
 
     headers = worksheet.row_values(1)
 
@@ -88,7 +121,7 @@ def get_account_context():
 
     if missing:
         raise ValueError(
-            "Missing student_accounts headers: "
+            "Missing user_accounts headers: "
             + ", ".join(missing)
         )
 
@@ -100,6 +133,7 @@ def get_account_context():
     }
 
     return worksheet, headers, records, header_positions
+
 
 
 def update_account_cells(
@@ -212,7 +246,10 @@ def reset_page_error():
 # Page
 # --------------------------------------------------
 
-st.title("🔐 SAES Student Login")
+st.title("🔐 SAES Login")
+st.caption(
+    "Sign in to your Sodbridge Academy Engagement System account."
+)
 
 if "login_mode" not in st.session_state:
     st.session_state["login_mode"] = "Log In"
@@ -226,40 +263,11 @@ if st.session_state.pop("return_to_login", False):
 # Already authenticated
 # --------------------------------------------------
 
-if st.session_state.get("user_authenticated"):
-    st.success(
-        "Logged in as "
-        + str(st.session_state.get("user_email", ""))
-    )
-
-    st.caption(
-        "Role: "
-        + str(st.session_state.get("user_role", "")).title()
-    )
-
-    if st.button("Log Out"):
-        clear_user_session()
-        st.session_state.pop("login_mode", None)
-        st.rerun()
-
-    st.stop()
-
-elif st.session_state.get("student_authenticated"):
-    st.success(
-        "Logged in as "
-        + str(st.session_state.get("student_email", ""))
-    )
-
-    st.write(
-        "Student ID: "
-        + str(st.session_state.get("student_id", ""))
-    )
-
-    if st.button("Log Out"):
-        clear_student_session()
-        st.session_state.pop("login_mode", None)
-        st.rerun()
-
+if (
+    st.session_state.get("user_authenticated")
+    or st.session_state.get("student_authenticated")
+):
+    redirect_authenticated_user()
     st.stop()
 
 
@@ -275,6 +283,9 @@ mode = st.radio(
 )
 
 
+# old hash: scrypt$16384$8$1$17e3de4665a8c1da6c5d77539cef76a3$ec530646240af77f8ab9255b2514272d6b3ade9bef04a4a73f07127c91271e7f
+# new hash:  
+
 
 # ==================================================
 # LOGIN
@@ -284,12 +295,7 @@ if mode == "Log In":
 
     with st.form("student_login"):
         email = st.text_input("Email Address")
-
-        password = st.text_input(
-            "Password",
-            type="password",
-        )
-
+        password = st.text_input("Password", type="password")
         submit = st.form_submit_button("Log In")
 
     if submit:
@@ -300,79 +306,210 @@ if mode == "Log In":
 
         else:
             try:
-                # 1. Try the new shared account system.
+                # ------------------------------------------
+                # 1. Authenticate against shared accounts
+                # ------------------------------------------
+
                 shared_account = authenticate_user(email, password)
 
-                if shared_account:
-                    set_user_session(shared_account)
-                    st.rerun()
+                if not shared_account:
+                    st.error(
+                        "Unable to log in with those details. "
+                        "Check your credentials or contact "
+                        "the Academy Manager."
+                    )
+                    st.stop()
 
-                else:
-                    # 2. Fall back to the existing student system.
-                    (
-                        worksheet,
-                        headers,
-                        accounts,
-                        header_positions,
-                    ) = get_account_context()
+                # ------------------------------------------
+                # 2. Establish shared authenticated session
+                # ------------------------------------------
 
-                    matching_accounts = [
-                        (index, account)
-                        for index, account in enumerate(
-                            accounts,
-                            start=2,
-                        )
-                        if normalize_email(
-                            account.get("email_address", "")
-                        ) == email
+                set_user_session(shared_account)
+
+                user_id = str(
+                    shared_account.get("user_id", "")
+                ).strip()
+
+                role = str(
+                    shared_account.get("role")
+                    or st.session_state.get("user_role", "")
+                ).strip().casefold()
+
+                role_aliases = {
+                    "student": "student",
+                    "learner": "student",
+                    "instructor": "instructor",
+                    "teacher": "instructor",
+                    "admin": "admin",
+                    "administrator": "admin",
+                }
+
+                role = role_aliases.get(role, role)
+
+                if role not in ROLE_DESTINATIONS:
+                    clear_user_session()
+                    clear_student_session()
+
+                    st.error(
+                        "Your account role is missing or "
+                        "is not supported. Please contact "
+                        "the Academy Manager."
+                    )
+                    st.stop()
+
+                st.session_state["user_role"] = role
+
+                # ------------------------------------------
+                # 3. Link student profile
+                # ------------------------------------------
+
+                if role == "student":
+
+                    sheets = get_sheets()
+                    students_sheet = sheets["students"]
+
+                    student_records = students_sheet.get_all_records(
+                        default_blank=""
+                    )
+
+                    matching_students = [
+                        student
+                        for student in student_records
+                        if str(
+                            student.get("user_id", "")
+                        ).strip() == user_id
                     ]
 
-                    if len(matching_accounts) != 1:
+                    if len(matching_students) != 1:
+                        clear_user_session()
+                        clear_student_session()
+
+                        logger.error(
+                            "Student profile link failed. "
+                            "user_id=%s, matches=%s",
+                            user_id,
+                            len(matching_students),
+                        )
+
                         st.error(
-                            "Unable to log in with those details. "
-                            "Check your credentials or contact "
+                            "Your student profile could not be "
+                            "linked to your account. Please "
+                            "contact the Academy Manager."
+                        )
+                        st.stop()
+
+                    student = matching_students[0]
+
+                    account_student_id = str(
+                        student.get("student_id", "")
+                    ).strip()
+
+                    if not account_student_id:
+                        clear_user_session()
+                        clear_student_session()
+
+                        logger.error(
+                            "Student record has no student_id. "
+                            "user_id=%s",
+                            user_id,
+                        )
+
+                        st.error(
+                            "Your student profile has an incomplete "
+                            "record. Please contact the Academy Manager."
+                        )
+                        st.stop()
+
+                    st.session_state["student_authenticated"] = True
+                    st.session_state["student_email"] = email
+                    st.session_state["student_id"] = account_student_id
+
+                # ------------------------------------------
+                # 4. Link instructor profile
+                # ------------------------------------------
+
+                elif role == "instructor":
+
+                    sheets = get_sheets()
+                    staff_sheet = sheets["staff"]
+
+                    staff_records = staff_sheet.get_all_records(
+                        default_blank=""
+                    )
+
+                    matching_staff = [
+                        staff
+                        for staff in staff_records
+                        if str(
+                            staff.get("user_id", "")
+                        ).strip() == user_id
+                    ]
+
+                    if len(matching_staff) != 1:
+                        clear_user_session()
+                        clear_student_session()
+
+                        logger.error(
+                            "Instructor profile link failed. "
+                            "user_id=%s, matches=%s",
+                            user_id,
+                            len(matching_staff),
+                        )
+
+                        st.error(
+                            "Your instructor profile could not be "
+                            "linked to your account. Please contact "
                             "the Academy Manager."
                         )
+                        st.stop()
 
-                    else:
-                        row_number, account = matching_accounts[0]
+                    instructor = matching_staff[0]
 
-                        status = str(
-                            account.get("account_status", "")
-                        ).strip().casefold()
+                    staff_id = str(
+                        instructor.get("staff_id", "")
+                    ).strip()
 
-                        stored_hash = str(
-                            account.get("password_hash", "")
+                    if not staff_id:
+                        clear_user_session()
+                        clear_student_session()
+
+                        logger.error(
+                            "Instructor record has no staff_id. "
+                            "user_id=%s",
+                            user_id,
                         )
 
-                        if status != "active":
-                            st.error(
-                                "This account is not active. "
-                                "Please contact the Academy Manager."
-                            )
+                        st.error(
+                            "Your staff profile has an incomplete "
+                            "record. Please contact the Academy Manager."
+                        )
+                        st.stop()
 
-                        elif verify_password(password, stored_hash):
-                            st.session_state["student_id"] = str(
-                                account.get("student_id", "")
-                            ).strip()
+                    st.session_state["staff_id"] = staff_id
+                    st.session_state["staff_name"] = str(
+                        instructor.get("full_name", "")
+                    ).strip()
 
-                            st.session_state["student_email"] = email
-                            st.session_state["student_authenticated"] = True
+                # ------------------------------------------
+                # 5. Admins do not require student/staff links
+                # ------------------------------------------
 
-                            st.rerun()
+                # ------------------------------------------
+                # 6. Redirect authenticated user
+                # ------------------------------------------
 
-                        else:
-                            st.error(
-                                "Unable to log in with those details. "
-                                "Check your credentials or contact "
-                                "the Academy Manager."
-                            )
+                redirect_authenticated_user()
+                st.stop()
 
-            except Exception as exc:
-                print(f"SAES login error: {exc}")
+            except Exception:
+                logger.exception("SAES login failed")
+
+                clear_user_session()
+                clear_student_session()
+
                 st.error(
                     "Login is temporarily unavailable. "
-                    "Please try again later."
+                    "Please try again later or contact the admin."
                 )
 
 

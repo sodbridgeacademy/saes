@@ -399,6 +399,7 @@ if submit:
                         "email_address": email,
                         "school": school,
                         "cohort": cohort,
+                        "status": "active",
                         "created_at": created_at,
                         "student_source": student_source,
                     }

@@ -51,6 +51,8 @@ def get_sheets():
         ),
         "cohorts": sheet.worksheet("cohorts"),
         "staff_invitations": sheet.worksheet("staff_invitations"),
+        "schools": sheet.worksheet("schools"),
+        "auth_sessions": sheet.worksheet("auth_sessions"),
 
     }
 

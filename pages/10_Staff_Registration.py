@@ -21,19 +21,6 @@ st.set_page_config(
     layout="centered",
 )
 
-INVITATION_HEADERS = [
-    "invitation_id",
-    "invited_email",
-    "role",
-    "token_hash",
-    "status",
-    "expires_at",
-    "created_at",
-    "created_by",
-    "used_at",
-    "used_by",
-]
-
 USER_ACCOUNT_HEADERS = [
     "user_id",
     "email_address",
@@ -49,6 +36,27 @@ USER_ACCOUNT_HEADERS = [
     "last_login_at",
 ]
 
+
+INVITATION_HEADERS = [
+    "invitation_id",
+    "invited_email",
+    "role",
+    "token_hash",
+    "status",
+    "expires_at",
+    "created_at",
+    "created_by",
+    "used_at",
+    "used_by",
+    "school_id",
+]
+
+SCHOOL_HEADERS = [
+    "school_id",
+    "school_name",
+    "status",
+]
+
 STAFF_HEADERS = [
     "staff_id",
     "user_id",
@@ -59,6 +67,7 @@ STAFF_HEADERS = [
     "status",
     "created_at",
     "created_by",
+    "school_id",
 ]
 
 APPROVED_ROLES = {"instructor", "admin"}
@@ -211,6 +220,44 @@ def username_exists(staff_sheet, username):
     )
 
 
+def get_active_school(schools_sheet, school_id):
+    """Return an active school matching its exact school ID."""
+    school_id = str(school_id or "").strip()
+
+    if not school_id:
+        return None
+
+    validate_headers(
+        schools_sheet,
+        SCHOOL_HEADERS,
+        "schools",
+    )
+
+    records = schools_sheet.get_all_records(
+        default_blank="",
+    )
+
+    matches = [
+        row
+        for row in records
+        if str(row.get("school_id", "")).strip() == school_id
+    ]
+
+    # Fail closed if IDs are duplicated.
+    if len(matches) != 1:
+        return None
+
+    school = matches[0]
+
+    if str(school.get("status", "")).strip().lower() != "active":
+        return None
+
+    if not str(school.get("school_name", "")).strip():
+        return None
+
+    return school
+
+
 # --------------------------------------------------
 # READ AND VALIDATE INVITATION
 # --------------------------------------------------
@@ -245,12 +292,14 @@ if len(invite_token) > 512:
     st.error("The invitation link is invalid.")
     st.stop()
 
+
 try:
     sheets = get_sheets()
 
     invitation_sheet = sheets["staff_invitations"]
     user_accounts = sheets["user_accounts"]
     staff_sheet = sheets["staff"]
+    schools_sheet = sheets["schools"]
 
     validate_headers(
         invitation_sheet,
@@ -268,6 +317,12 @@ try:
         staff_sheet,
         STAFF_HEADERS,
         "staff",
+    )
+
+    validate_headers(
+        schools_sheet,
+        SCHOOL_HEADERS,
+        "schools",
     )
 
     invitation_records = invitation_sheet.get_all_records(
@@ -359,6 +414,34 @@ if assigned_role not in APPROVED_ROLES:
     )
     st.stop()
 
+
+assigned_school_id = str(
+    invitation.get("school_id", "")
+).strip()
+
+assigned_school = None
+
+if assigned_school_id:
+    assigned_school = get_active_school(
+        schools_sheet,
+        assigned_school_id,
+    )
+
+    if assigned_school is None:
+        st.error(
+            "The school assigned to this invitation is invalid "
+            "or inactive. Please contact the SAES administrator."
+        )
+        st.stop()
+
+elif assigned_role == "instructor":
+    st.error(
+        "This instructor invitation has no school assignment. "
+        "Please contact the SAES administrator for a corrected invitation."
+    )
+    st.stop()
+
+
 if not invited_email:
     st.error(
         "This invitation has no valid email address. "
@@ -374,6 +457,13 @@ if not invited_email:
 st.success("Your invitation is valid.")
 st.write(f"**Invited email:** {invited_email}")
 st.write(f"**Assigned role:** {assigned_role.title()}")
+
+if assigned_school:
+    st.write(
+        f"**Assigned school:** "
+        f"{assigned_school['school_name']}"
+    )
+
 st.caption(
     "Your email address and role are fixed by the invitation "
     "and cannot be changed on this page."
@@ -486,7 +576,10 @@ if submitted:
                 "created_by",
                 "invitation",
             ),
+            "school_id": assigned_school_id,
         }
+
+
 
         account_row_number = None
         staff_row_number = None

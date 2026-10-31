@@ -15,3 +15,13 @@ def load_events():
 @st.cache_data(ttl=60)
 def load_logs():
     return pd.DataFrame(sheets["logs"].get_all_records())
+
+
+@st.cache_data(ttl=60)
+def load_staff_records():
+    return pd.DataFrame(sheets["staff"].get_all_records())
+
+
+@st.cache_data(ttl=60)
+def load_school_records():
+    return pd.DataFrame(sheets["schools"].get_all_records())

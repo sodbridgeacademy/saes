@@ -399,106 +399,99 @@ def require_user_login(allowed_roles=None):
 
 def require_student_login():
     """
-    Preserve the existing student_accounts verification while
-    legacy student pages are migrated to shared authentication.
+    Verify a student through shared user_accounts authentication
+    and link the account to the students worksheet using user_id.
     """
 
-    if not st.session_state.get("student_authenticated"):
-        st.warning("Please log in to access this page.")
-        st.stop()
+    # First verify the shared account and its student role.
+    account = require_user_login(allowed_roles={"student"})
 
-    student_id = str(
-        st.session_state.get("student_id", "")
-    ).strip()
-
-    student_email = normalize_email(
-        st.session_state.get("student_email", "")
+    user_id = normalize_user_id(
+        account.get("user_id", "")
     )
 
-    if not student_id or not student_email:
+    session_student_id = normalize_student_id(
+        st.session_state.get("student_id", "")
+    )
+
+    if not user_id or not session_student_id:
+        clear_user_session()
         clear_student_session()
+
         st.error(
-            "Your session is invalid. Please log in again."
+            "Your student session is incomplete. "
+            "Please log in again."
         )
         st.stop()
 
     try:
         sheets = get_sheets()
-        accounts_sheet = sheets["student_accounts"]
+        students_sheet = sheets["students"]
 
-        headers = accounts_sheet.row_values(1)
+        headers = students_sheet.row_values(1)
 
         required_headers = {
-            "email_address",
+            "user_id",
             "student_id",
-            "account_status",
         }
 
         if not required_headers.issubset(set(headers)):
-            clear_student_session()
-            st.error(
-                "Account verification is unavailable. "
-                "Please contact the Academy administrator."
+            raise ValueError(
+                "The students worksheet is missing required columns."
             )
-            st.stop()
 
-        accounts = accounts_sheet.get_all_records(
-            default_blank="",
+        student_records = students_sheet.get_all_records(
+            default_blank=""
         )
 
-        normalized_id = normalize_student_id(student_id)
-
-        related_accounts = [
-            account
-            for account in accounts
-            if (
-                normalize_student_id(
-                    account.get("student_id", "")
-                ) == normalized_id
-                or normalize_email(
-                    account.get("email_address", "")
-                ) == student_email
-            )
+        matching_students = [
+            student
+            for student in student_records
+            if normalize_user_id(
+                student.get("user_id", "")
+            ) == user_id
         ]
 
-        if len(related_accounts) != 1:
+        if len(matching_students) != 1:
+            clear_user_session()
             clear_student_session()
+
             st.error(
-                "Your account could not be verified. "
-                "Please log in again or contact the "
+                "Your student profile could not be linked "
+                "to your account. Please contact the "
                 "Academy administrator."
             )
             st.stop()
 
-        account = related_accounts[0]
+        student = matching_students[0]
 
-        account_id = normalize_student_id(
-            account.get("student_id", "")
+        actual_student_id = normalize_student_id(
+            student.get("student_id", "")
         )
-        account_email = normalize_email(
-            account.get("email_address", "")
-        )
-        account_status = str(
-            account.get("account_status", "")
-        ).strip().casefold()
 
         if (
-            account_id != normalized_id
-            or account_email != student_email
-            or account_status != "active"
+            not actual_student_id
+            or actual_student_id != session_student_id
         ):
+            clear_user_session()
             clear_student_session()
+
             st.error(
-                "Your account is no longer authorised. "
-                "Please contact the Academy administrator."
+                "Your student profile could not be verified. "
+                "Please log in again or contact the Academy administrator."
             )
             st.stop()
 
-        return str(account["student_id"]).strip()
+        return str(student.get("student_id", "")).strip()
 
     except Exception as exc:
+        clear_user_session()
         clear_student_session()
-        print(f"SAES student session verification error: {exc}")
+
+        print(
+            f"SAES shared student verification error: {exc}"
+        )
+
         st.error(
             "Your account could not be verified right now. "
             "Please try again later."
