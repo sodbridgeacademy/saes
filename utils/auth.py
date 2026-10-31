@@ -3,7 +3,12 @@ import os
 import hashlib
 import hmac
 
+import extra_streamlit_components as stx
 import streamlit as st
+import secrets
+import uuid
+
+from datetime import datetime, timedelta, timezone
 
 from utils.sheets import get_sheets
 
@@ -115,6 +120,7 @@ def clear_user_session():
         "student_id",
         "student_email",
         "admin_authenticated",
+        "persistent_session_id",
     )
 
     for key in keys:
@@ -178,9 +184,411 @@ def set_user_session(account):
 
 
 def logout_user():
-    """Log out the current user."""
+    """Revoke and clear only the current browser session."""
 
-    clear_user_session()
+    session_id = st.session_state.get("persistent_session_id", "")
+
+    try:
+        if session_id:
+            _revoke_persistent_session(session_id)
+
+        _delete_auth_cookie()
+
+    except Exception as exc:
+        print(f"SAES logout error: {exc}")
+
+    finally:
+        clear_user_session()
+
+
+# --------------------------------------------------
+# PERSISTENT SESSION CONFIGURATION
+# --------------------------------------------------
+
+COOKIE_NAME = "saes_auth_session"
+COOKIE_MANAGER_KEY = "saes_auth_cookie_manager"
+
+SESSION_DURATION_HOURS = 24
+
+AUTH_SESSION_HEADERS = [
+    "session_id",
+    "user_id",
+    "token_hash",
+    "created_at",
+    "expires_at",
+    "last_activity_at",
+    "session_status",
+    "revoked_at",
+]
+
+
+def utc_now():
+    """Return the current UTC time."""
+    return datetime.now(timezone.utc)
+
+
+def get_cookie_manager():
+    """Return the SAES browser cookie manager."""
+    return stx.CookieManager(key=COOKIE_MANAGER_KEY)
+
+
+def _get_auth_sessions_sheet():
+    """Return the auth_sessions worksheet after validating its headers."""
+
+    sheets = get_sheets()
+    worksheet = sheets["auth_sessions"]
+
+    headers = worksheet.row_values(1)
+
+    if headers != AUTH_SESSION_HEADERS:
+        raise ValueError(
+            "The auth_sessions worksheet headers are missing, "
+            "misordered or do not match the required structure."
+        )
+
+    return worksheet
+
+
+def _get_role_alias(role):
+    """Convert legacy role names to canonical SAES roles."""
+
+    aliases = {
+        "student": "student",
+        "learner": "student",
+        "instructor": "instructor",
+        "teacher": "instructor",
+        "admin": "admin",
+        "administrator": "admin",
+    }
+
+    return aliases.get(normalize_role(role), "")
+
+
+def _revoke_persistent_session(session_id):
+    """Revoke one persistent session by its session ID."""
+
+    if not session_id:
+        return
+
+    worksheet = _get_auth_sessions_sheet()
+    records = worksheet.get_all_records(default_blank="")
+
+    matches = [
+        (index + 2, record)
+        for index, record in enumerate(records)
+        if str(record.get("session_id", "")).strip() == session_id
+    ]
+
+    if len(matches) != 1:
+        return
+
+    row_number, record = matches[0]
+
+    if str(record.get("session_status", "")).strip().casefold() != "active":
+        return
+
+    worksheet.update_cell(row_number, 7, "revoked")
+    worksheet.update_cell(row_number, 8, utc_now().isoformat())
+
+
+def _delete_auth_cookie(cookie_manager=None):
+    """Delete the persistent authentication cookie."""
+
+    if cookie_manager is None:
+        cookie_manager = get_cookie_manager()
+
+    cookie_manager.delete(
+        cookie=COOKIE_NAME,
+        key="saes_auth_cookie_delete",
+    )
+
+
+def create_persistent_session(account):
+    """
+    Create a new 24-hour persistent session.
+
+    The raw token is stored only in the browser cookie.
+    Only its SHA-256 hash is stored in Google Sheets.
+    """
+
+    user_id = normalize_user_id(account.get("user_id", ""))
+
+    if not user_id:
+        raise ValueError("Cannot create a session without a user ID.")
+
+    now = utc_now()
+    expires_at = now + timedelta(hours=SESSION_DURATION_HOURS)
+
+    session_id = uuid.uuid4().hex
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    worksheet = _get_auth_sessions_sheet()
+
+    worksheet.append_row(
+        [
+            session_id,
+            user_id,
+            token_hash,
+            now.isoformat(),
+            expires_at.isoformat(),
+            now.isoformat(),
+            "active",
+            "",
+        ],
+        value_input_option="RAW",
+    )
+
+    cookie_manager = get_cookie_manager()
+
+    cookie_manager.set(
+        cookie=COOKIE_NAME,
+        val=token,
+        expires_at=expires_at,
+        path="/",
+        secure=True,
+        same_site="strict",
+        key="saes_auth_cookie_set",
+    )
+
+    st.session_state["persistent_session_id"] = session_id
+
+
+def _restore_user_profile(account, role):
+    """
+    Restore the profile fields required by existing SAES pages.
+    """
+
+    user_id = normalize_user_id(account.get("user_id", ""))
+
+    if role == "student":
+
+        sheets = get_sheets()
+        records = sheets["students"].get_all_records(default_blank="")
+
+        matches = [
+            record for record in records
+            if normalize_user_id(record.get("user_id", "")) == user_id
+        ]
+
+        if len(matches) != 1:
+            raise ValueError("Student profile could not be restored.")
+
+        student_id = str(matches[0].get("student_id", "")).strip()
+
+        if not student_id:
+            raise ValueError("Student profile has no student ID.")
+
+        st.session_state["student_authenticated"] = True
+        st.session_state["student_email"] = normalize_email(
+            account.get("email_address", "")
+        )
+        st.session_state["student_id"] = student_id
+
+    elif role == "instructor":
+
+        sheets = get_sheets()
+        records = sheets["staff"].get_all_records(default_blank="")
+
+        matches = [
+            record for record in records
+            if normalize_user_id(record.get("user_id", "")) == user_id
+        ]
+
+        if len(matches) != 1:
+            raise ValueError("Instructor profile could not be restored.")
+
+        staff_id = str(matches[0].get("staff_id", "")).strip()
+
+        if not staff_id:
+            raise ValueError("Instructor profile has no staff ID.")
+
+        st.session_state["staff_id"] = staff_id
+        st.session_state["staff_name"] = str(
+            matches[0].get("full_name", "")
+        ).strip()
+
+
+def restore_persistent_session():
+    """
+    Restore authentication from a valid browser cookie.
+
+    Returns True when restoration succeeds, otherwise False.
+    """
+
+    cookie_manager = get_cookie_manager()
+    token = cookie_manager.get(COOKIE_NAME)
+
+    if not token:
+        return False
+
+    session_id = ""
+
+    try:
+        token_hash = hashlib.sha256(
+            str(token).encode("utf-8")
+        ).hexdigest()
+
+        worksheet = _get_auth_sessions_sheet()
+        records = worksheet.get_all_records(default_blank="")
+
+        matches = [
+            (index + 2, record)
+            for index, record in enumerate(records)
+            if hmac.compare_digest(
+                str(record.get("token_hash", "")),
+                token_hash,
+            )
+        ]
+
+        if len(matches) != 1:
+            _delete_auth_cookie(cookie_manager)()
+            return False
+
+        row_number, session_record = matches[0]
+
+        session_id = str(
+            session_record.get("session_id", "")
+        ).strip()
+
+        if str(
+            session_record.get("session_status", "")
+        ).strip().casefold() != "active":
+            _delete_auth_cookie()
+            return False
+
+        expires_at = datetime.fromisoformat(
+            str(session_record.get("expires_at", "")).replace(
+                "Z", "+00:00"
+            )
+        )
+
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        if utc_now() >= expires_at:
+            _revoke_persistent_session(
+                str(session_record.get("session_id", ""))
+            )
+            _delete_auth_cookie()
+            return False
+
+        user_id = normalize_user_id(
+            session_record.get("user_id", "")
+        )
+
+        sheets = get_sheets()
+        accounts = sheets["user_accounts"].get_all_records(
+            default_blank=""
+        )
+
+        account_matches = [
+            account for account in accounts
+            if normalize_user_id(account.get("user_id", "")) == user_id
+        ]
+
+        if len(account_matches) != 1:
+            _revoke_persistent_session(
+                str(session_record.get("session_id", ""))
+            )
+            _delete_auth_cookie()
+            return False
+
+        account = account_matches[0]
+
+        if str(
+            account.get("account_status", "")
+        ).strip().casefold() != "active":
+            _revoke_persistent_session(
+                str(session_record.get("session_id", ""))
+            )
+            _delete_auth_cookie()
+            return False
+
+        role = _get_role_alias(account.get("role", ""))
+
+        if not role:
+            _revoke_persistent_session(
+                str(session_record.get("session_id", ""))
+            )
+            _delete_auth_cookie()
+            return False
+
+        # Re-establish the shared authentication state.
+        set_user_session(account)
+
+        # Ensure the role uses the canonical SAES value.
+        st.session_state["user_role"] = role
+
+        # Restore the relevant student or instructor profile.
+        _restore_user_profile(account, role)
+
+        # Preserve the ID of this particular browser session.
+        st.session_state["persistent_session_id"] = str(
+            session_record.get("session_id", "")
+        ).strip()
+
+        # Record restoration activity without extending expiry.
+        worksheet.update_cell(
+            row_number,
+            6,
+            utc_now().isoformat(),
+        )
+
+        return True
+
+    except Exception as exc:
+        print(f"SAES persistent session restoration error: {exc}")
+
+        try:
+            if session_id:
+                _revoke_persistent_session(session_id)
+
+            _delete_auth_cookie(cookie_manager)
+
+        except Exception as cleanup_error:
+            print(
+                f"SAES persistent session cleanup error: {cleanup_error}"
+            )
+
+        clear_user_session()
+        return False
+
+
+def verify_current_persistent_session():
+    """Verify that the current browser session remains active and unexpired."""
+
+    session_id = str(
+        st.session_state.get("persistent_session_id", "")
+    ).strip()
+
+    if not session_id:
+        return False
+
+    worksheet = _get_auth_sessions_sheet()
+    records = worksheet.get_all_records(default_blank="")
+
+    matches = [
+        record for record in records
+        if str(record.get("session_id", "")).strip() == session_id
+    ]
+
+    if len(matches) != 1:
+        return False
+
+    record = matches[0]
+
+    if str(record.get("session_status", "")).strip().casefold() != "active":
+        return False
+
+    expires_at = datetime.fromisoformat(
+        str(record.get("expires_at", "")).replace("Z", "+00:00")
+    )
+
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    return utc_now() < expires_at
 
 
 # --------------------------------------------------
@@ -283,13 +691,15 @@ def require_user_login(allowed_roles=None):
     """
     Require an authenticated, active shared user account.
 
-    Optionally restrict access to a list or set of roles.
-    Returns the verified account record.
+    Restore a persistent session when the Streamlit session
+    state is missing.
     """
 
     if not st.session_state.get("user_authenticated"):
-        st.warning("Please log in to access this page.")
-        st.stop()
+
+        if not restore_persistent_session():
+            st.warning("Please log in to access this page.")
+            st.stop()
 
     user_id = normalize_user_id(
         st.session_state.get("user_id", "")
@@ -302,13 +712,17 @@ def require_user_login(allowed_roles=None):
     )
 
     if not user_id or not email or not role:
-        clear_user_session()
-        st.error(
-            "Your session is invalid. Please log in again."
-        )
+        logout_user()
+        st.error("Your session is invalid. Please log in again.")
         st.stop()
 
     try:
+        # Check the actual persistent session record.
+        if not verify_current_persistent_session():
+            logout_user()
+            st.warning("Your session has expired. Please log in again.")
+            st.stop()
+
         sheets = get_sheets()
         accounts_sheet = sheets["user_accounts"]
 
@@ -326,20 +740,17 @@ def require_user_login(allowed_roles=None):
                 "The user_accounts worksheet is missing required columns."
             )
 
-        accounts = accounts_sheet.get_all_records(
-            default_blank="",
-        )
+        accounts = accounts_sheet.get_all_records(default_blank="")
 
         matches = [
-            account
-            for account in accounts
+            account for account in accounts
             if normalize_user_id(
                 account.get("user_id", "")
             ) == user_id
         ]
 
         if len(matches) != 1:
-            clear_user_session()
+            logout_user()
             st.error(
                 "Your account could not be verified. Please log in again."
             )
@@ -350,7 +761,7 @@ def require_user_login(allowed_roles=None):
         account_email = normalize_email(
             account.get("email_address", "")
         )
-        account_role = normalize_role(
+        account_role = _get_role_alias(
             account.get("role", "")
         )
         account_status = str(
@@ -362,7 +773,7 @@ def require_user_login(allowed_roles=None):
             or account_role != role
             or account_status != "active"
         ):
-            clear_user_session()
+            logout_user()
             st.error(
                 "Your account is no longer authorised. "
                 "Please log in again or contact the administrator."
@@ -371,11 +782,11 @@ def require_user_login(allowed_roles=None):
 
         if allowed_roles is not None:
             permitted_roles = {
-                normalize_role(item)
+                _get_role_alias(item)
                 for item in allowed_roles
             }
 
-            if account_role not in permitted_roles:
+            if role not in permitted_roles:
                 st.error(
                     "You do not have permission to access this page."
                 )
@@ -386,6 +797,7 @@ def require_user_login(allowed_roles=None):
     except Exception as exc:
         clear_user_session()
         print(f"SAES shared session verification error: {exc}")
+
         st.error(
             "Your account could not be verified right now. "
             "Please try again later."
@@ -453,8 +865,7 @@ def require_student_login():
         ]
 
         if len(matching_students) != 1:
-            clear_user_session()
-            clear_student_session()
+            logout_user()
 
             st.error(
                 "Your student profile could not be linked "

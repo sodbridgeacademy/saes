@@ -18,6 +18,7 @@ from utils.auth import (
     clear_user_session,
     authenticate_user,
     set_user_session,
+    create_persistent_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -494,8 +495,15 @@ if mode == "Log In":
                 # 5. Admins do not require student/staff links
                 # ------------------------------------------
 
+            
                 # ------------------------------------------
-                # 6. Redirect authenticated user
+                # 6. Create persistent session
+                # ------------------------------------------
+
+                create_persistent_session(shared_account)
+
+                # ------------------------------------------
+                # 7. Redirect authenticated user
                 # ------------------------------------------
 
                 redirect_authenticated_user()
@@ -504,9 +512,9 @@ if mode == "Log In":
             except Exception:
                 logger.exception("SAES login failed")
 
-                clear_user_session()
-                clear_student_session()
+                logout_user()
 
+            
                 st.error(
                     "Login is temporarily unavailable. "
                     "Please try again later or contact the admin."

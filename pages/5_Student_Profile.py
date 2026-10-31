@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 
 from utils.data import load_students, load_logs
-from utils.auth import require_student_login, clear_user_session
+from utils.auth import require_student_login, logout_user
 
 st.set_page_config(
     page_title="Student Profile",
