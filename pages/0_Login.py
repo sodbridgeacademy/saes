@@ -20,6 +20,7 @@ from utils.auth import (
     set_user_session,
     create_persistent_session,
     logout_user,
+    restore_persistent_session
 )
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,7 @@ def code_digest(email, code):
     ).hexdigest()
 
 
+
 def send_reset_email(email, code):
     """Send the password-reset verification code by SMTP."""
 
@@ -273,6 +275,17 @@ if (
     st.stop()
 
 
+# ==================================================
+# RESTORE PERSISTENT LOGIN
+# ==================================================
+
+if not st.session_state.get("user_authenticated"):
+
+    if restore_persistent_session():
+        redirect_authenticated_user()
+        st.stop()
+
+
 # --------------------------------------------------
 # Choose login or password recovery
 # --------------------------------------------------
@@ -349,8 +362,8 @@ if mode == "Log In":
                 role = role_aliases.get(role, role)
 
                 if role not in ROLE_DESTINATIONS:
-                    clear_user_session()
-                    clear_student_session()
+                    logout_user()
+                    
 
                     st.error(
                         "Your account role is missing or "

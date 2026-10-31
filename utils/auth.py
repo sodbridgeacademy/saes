@@ -227,9 +227,16 @@ def utc_now():
     return datetime.now(timezone.utc)
 
 
+
 def get_cookie_manager():
-    """Return the SAES browser cookie manager."""
-    return stx.CookieManager(key=COOKIE_MANAGER_KEY)
+    """Return one CookieManager instance per Streamlit session."""
+
+    if "_saes_cookie_manager" not in st.session_state:
+        st.session_state["_saes_cookie_manager"] = (
+            stx.CookieManager(key=COOKIE_MANAGER_KEY)
+        )
+
+    return st.session_state["_saes_cookie_manager"]
 
 
 def _get_auth_sessions_sheet():
