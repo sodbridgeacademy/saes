@@ -144,7 +144,7 @@ if st.button(
     use_container_width=True,
 ):
     clear_user_session()
-    st.switch_page("0_Login.py")
+    st.switch_page("pages/0_Login.py")
 
 
 # Load and validate activity data.
